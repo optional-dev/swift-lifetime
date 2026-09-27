@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Compile consumer fixtures, including failures that runtime tests cannot cover."""
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SWIFT = os.environ.get("SWIFT", "swift")
+SWIFTC = os.environ.get("SWIFTC", "swiftc")
+
+
+def run(*args):
+    return subprocess.run(args, cwd=ROOT, text=True, capture_output=True, check=True)
+
+
+run(SWIFT, "build")
+build = Path(run(SWIFT, "build", "--show-bin-path").stdout.strip())
+module = next(p for p in (build / "Modules", build) if (p / "Lifetime.swiftmodule").exists())
+package = json.loads(run(SWIFT, "package", "dump-package").stdout)
+assert [p["name"] for p in package["products"]] == ["Lifetime"]
+
+flags = ["-swift-version", "6", "-parse-as-library", "-I", str(module)]
+if sys.platform == "darwin":
+    target = json.loads(run(SWIFTC, "-print-target-info").stdout)["target"]["unversionedTriple"]
+    flags += ["-target", target + "15.0"]
+
+# Compile to SIL/object code: type checking alone does not run ownership checking.
+fixtures = {
+    "valid_ownership": (None, """
+        import Lifetime
+        struct ExternalLeaf: LifetimeHandle, ~Copyable {
+          borrowing func cancel() async {}
+        }
+        func forward<H: LifetimeHandle & ~Copyable>(
+          _ handle: consuming H, into scope: Scope
+        ) async throws {
+          try await scope.adopt(consume handle)
+        }
+        func useAPI() async throws {
+          let root = Scope.root()
+          let child = try root.child()
+          let work = Work { 42 }
+          let result = work.result
+          try await forward(consume work, into: child)
+          try await root.adopt(ExternalLeaf())
+          let started = try root.start { "value" }
+          _ = try await result.value
+          _ = try await started.value
+          await child.cancel()
+          await root.cancel()
+        }
+    """),
+    "actor_isolated_captures_are_safe": (None, """
+        import Lifetime
+        final class Counter { var value = 0 }
+        @MainActor func valid() async throws {
+          let counter = Counter()
+          let root = Scope.root()
+          let work = Work { counter.value += 1 }
+          let result = try root.start { counter.value += 1 }
+          counter.value += 1
+          try await work.result.value
+          try await result.value
+          await work.cancel()
+          await root.cancel()
+        }
+    """),
+    "disconnected_capture_can_transfer": (None, """
+        import Lifetime
+        final class Counter { var value = 0 }
+        func valid() async throws {
+          let counter = Counter()
+          let work = Work { counter.value += 1; return counter.value }
+          _ = try await work.result.value
+          await work.cancel()
+        }
+    """),
+    "work_rejects_unsafe_capture_sharing": ("sending", """
+        import Lifetime
+        final class Counter { var value = 0 }
+        func invalid() async {
+          let counter = Counter()
+          let work = Work { counter.value += 1 }
+          counter.value += 1
+          await work.cancel()
+        }
+    """),
+    "start_rejects_unsafe_capture_sharing": ("sending", """
+        import Lifetime
+        final class Counter { var value = 0 }
+        func invalid() async throws {
+          let counter = Counter()
+          let root = Scope.root()
+          let result = try root.start { counter.value += 1 }
+          counter.value += 1
+          try await result.value
+          await root.cancel()
+        }
+    """),
+    "scope_is_not_a_leaf": ("LifetimeHandle", """
+        import Lifetime
+        func invalid() async throws {
+          let scope = Scope.root()
+          try await scope.adopt(scope)
+        }
+    """),
+    "raw_task_is_not_a_leaf": ("LifetimeHandle", """
+        import Lifetime
+        func invalid() async throws {
+          let scope = Scope.root()
+          try await scope.adopt(Task { 42 })
+        }
+    """),
+    "consumed_work_cannot_be_reused": ("consum", """
+        import Lifetime
+        func invalid() async throws {
+          let scope = Scope.root()
+          let work = Work { 42 }
+          try await scope.adopt(consume work)
+          await work.cancel()
+        }
+    """),
+    "work_cannot_be_duplicated": ("consum", """
+        import Lifetime
+        func invalid() async throws {
+          let scope = Scope.root()
+          let work = Work { 42 }
+          let alias = work
+          try await scope.adopt(consume work)
+          try await scope.adopt(consume alias)
+        }
+    """),
+    "observer_cannot_cancel": ("cancel", """
+        import Lifetime
+        func invalid(_ result: WorkResult<Int>) async {
+          await result.cancel()
+        }
+    """),
+    "detached_work_is_removed": ("DetachedWork", """
+        import Lifetime
+        func invalid() { _ = DetachedWork { 42 } }
+    """),
+}
+
+with tempfile.TemporaryDirectory(prefix="lifetime-api-") as directory:
+    directory = Path(directory)
+    for name, (diagnostic, source) in fixtures.items():
+        path = directory / f"{name}.swift"
+        path.write_text(source)
+        result = subprocess.run(
+            [SWIFTC, *flags, "-c", str(path), "-o", str(directory / f"{name}.o")],
+            cwd=ROOT, text=True, capture_output=True,
+        )
+        if diagnostic is None:
+            valid = result.returncode == 0
+        else:
+            valid = result.returncode != 0 and diagnostic in result.stderr
+        if not valid:
+            sys.exit(f"Unexpected compiler result for {name}:\n{result.stdout}{result.stderr}")
+        print(f"PASS {name}")

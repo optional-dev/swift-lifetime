@@ -2,12 +2,39 @@
 
 All notable changes to `swift-lifetime` are documented in this file.
 
-The format is based on
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This package
-becomes stable at `1.0.0`: future public API changes are intended to be
-source-compatible. Minor releases add functionality, and patch releases
-are reserved for fixes. See [README — Installation](./README.md#installation)
-for pinning guidance.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+The unreleased redesign below is intentionally source-breaking and requires a
+major release. The 1.0.0 entry describes the previous API.
+
+## [Unreleased]
+
+### Changed
+
+- **Breaking:** The only product is now `Lifetime`, exposing five types:
+  `Scope`, `LifetimeHandle`, noncopyable `Work<Value>`, passive
+  `WorkResult<Value>`, and `ScopeError`.
+- `Scope` is no longer a `LifetimeHandle`. Roots and immutable child creation
+  define the tree; arbitrary scope adoption and reparenting are unavailable.
+- Consuming adoption drains rejected work before throwing `ScopeError.closed`.
+  `Scope.start` registers work before execution and rejects without launching.
+- Cancellation closes the entire subtree atomically, cancels siblings
+  concurrently, and makes every caller await the same completion. Dropping a
+  child no longer loses its parent's ability to await cleanup.
+- `Work` requests cancellation on deinit. Retaining its result observer does
+  not retain cancellation ownership. Work and scope start inherit caller actor
+  isolation, including the main actor.
+- Known self-await cycles fail a precondition. `requestCancellation()` lets
+  work initiate its own subtree's cancellation without awaiting itself.
+
+### Removed
+
+- All previous APIs except the redesigned `Scope` and `LifetimeHandle`,
+  including resource/child wrappers and factories, task handles, continuation
+  utilities, policies, snapshots, and supervision.
+- `LifetimePrimitives`, `LifetimeBoundaries`, `LifetimePolicies`,
+  `LifetimeIntent`, `LifetimeResources`, and `LifetimeSwiftUI`, including
+  `DetachedOwnedWork`/`DetachedWork`, `ActorOwnedWork`, and `MainActorOwnedWork`.
+- The benchmark executable and examples/tests for the removed API.
 
 ## 1.0.0 Initial open-source release.
 

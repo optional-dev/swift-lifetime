@@ -26,7 +26,7 @@ to open a private advisory against this repository. Include:
 
 - A description of the issue and the security impact.
 - A minimal reproduction (ideally a Swift Testing case using the public
-  API of one of the library targets).
+  API of the `Lifetime` product).
 - Affected versions and platforms.
 - Any suggested mitigation.
 
@@ -45,19 +45,17 @@ Reports that fit, with examples:
 - A `Sendable` annotation on a public type is unsound and allows a
   data race observable from supported Swift 6 + strict memory safety
   configurations.
-- A `Resource`, `Child`, or supervised `LifetimeHandle` is reachable
-  after teardown in a way the public API does not document.
-- A factory throws something other than `ScopeError.cancelled` when its
-  originating scope has ended.
+- A subtree admits work after cancellation has closed it.
+- Dropping a child loses its parent's ability to await cleanup.
+- A `WorkResult` prevents its `Work` owner from cancelling on deinit.
 
 Reports that are not in scope (please file as regular issues instead):
 
-- Performance regressions that do not cross a published benchmark
-  threshold.
+- Performance regressions without a cancellation or memory-safety defect.
 - API ergonomic preferences.
 - Issues only reproducible under runtime configurations the package
   does not claim to support (e.g. Swift 5 language mode, iOS 17, or
-  custom executors not bridged through `LifetimePolicies`).
+  unsafe compiler modes).
 
 ## Coordinated disclosure
 

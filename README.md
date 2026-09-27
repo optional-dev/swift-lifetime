@@ -1,307 +1,170 @@
-# Lifetime
+# swift-lifetime
 
-[![ci](https://github.com/GoodHatsLLC/swift-lifetime/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GoodHatsLLC/swift-lifetime/actions/workflows/ci.yml)
-[![Swift versions](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FGoodHatsLLC%2Fswift-lifetime%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/GoodHatsLLC/swift-lifetime)
-[![Platforms](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FGoodHatsLLC%2Fswift-lifetime%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/GoodHatsLLC/swift-lifetime)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+Track asynchronous work in a tree and await cancellation of any subtree.
 
-**Make ownership and boundaries explicit, so they can be tested and torn down.**
+The package vends one product, `Lifetime`, with five public types:
 
-📚 [API documentation on Swift Package Index](https://swiftpackageindex.com/GoodHatsLLC/swift-lifetime/documentation)
+| Type | Purpose |
+| --- | --- |
+| `Scope` | A reference to a tree node; creates children and owns leaf registrations. |
+| `LifetimeHandle` | The contract `borrowing func cancel() async`: request cancellation and await all represented work and cleanup. |
+| `Work<Value>` | A noncopyable cancellation owner for an async operation; requests cancellation on deinit. |
+| `WorkResult<Value>` | A copyable result observer that carries no cancellation ownership. |
+| `ScopeError` | `.closed`, thrown when a scope cannot admit a child or work. |
 
-> **Requires Swift 6.2 + iOS 18 / macOS 15 / tvOS 18 / watchOS 11.** The
-> floor is driven by `Synchronization.Mutex`; projects still targeting
-> iOS 17 or earlier cannot adopt this package. See
-> [Requirements](#requirements) for the full list.
-
-Swift's structured concurrency makes task ownership implicit. `swift-lifetime`
-gives you explicit names for the rest: the runtime values your tasks own, the
-synchronous callback boundaries they cross, and the scheduler decisions they
-depend on.
-
-Open a resource, use it, close it deterministically — even on errors:
-
-```swift
-let user = try await Scope.withRoot { scope in
-  try await scope.withResource(
-    "APIClient",
-    create: { APIClient() },
-    destroy: { client in await client.shutdown() }
-  ) { client in
-    try await client.fetchUser(id: "avery")
-  }
-}
-// `client.shutdown()` has fully awaited by the time this line runs,
-// whether `fetchUser` returned or threw.
-```
-
-Composition is the same shape repeated: see [Structured Helpers](#structured-helpers) for resources nested inside child scopes.
-
-## Requirements
-
-- Swift 6.2+ in Swift 6 language mode
-- macOS 15+ / iOS 18+ / tvOS 18+ / watchOS 11+
-
-## Why not `TaskGroup` + `defer`?
-
-Structured concurrency already covers most cases. Reach for `Lifetime` when
-`TaskGroup` and `defer` start running out:
-
-- **Lifetimes must outlive a single function.** `TaskGroup` is a great
-  resource owner *for the duration of the function it's declared in* — when
-  that function returns, the group is gone. A long-lived `APIClient`, a
-  Combine subscription that needs to drain on logout, a database pool: those
-  outlive any single call. `Scope` is a first-class owner you can hand
-  around, adopt into another scope, and cancel from a different module.
-- **Teardown must be async and awaited.** `defer` blocks run synchronously
-  on the way out — fine for closing a file handle, useless for awaiting
-  `client.shutdown()`. `Scope.cancel()` is an `async` operation that
-  cascades through children and waits for in-flight `start` / `withResource`
-  teardown before returning.
-- **Synchronous platform callbacks need a drainable owner.** A UIKit
-  delegate method, a Combine subscriber, a C callback: each is a sync
-  entry point that needs to spawn async work. A raw `Task { … }` from such
-  a callback has no owner, no shutdown sequence, no way for a test to
-  await it. `LifetimeBoundaries` wraps that work in a handle you can
-  drain or cancel deterministically.
-- **Resources need names you can debug and tests can assert on.** Scopes,
-  resources, and children carry optional names that surface in
-  `description` output and in `ScopeError` context. Nothing in stdlib
-  gives you that.
-
-If a `TaskGroup` plus a couple of `defer` blocks covers your case, use
-them. This package earns its keep at the boundaries where they don't.
-
-## Modules
-
-The package is a small stack. Most users only need `Lifetime`. Add the higher
-layers when their tagline matches the problem you're holding.
-
-| Module | Tagline |
-|---|---|
-| `Lifetime` | Resource trees for Swift Concurrency. |
-| `LifetimePrimitives` | Async-aware coordination primitives. |
-| `LifetimeBoundaries` | Own async work at sync and callback boundaries. |
-| `LifetimePolicies` | Named, injectable scheduler boundaries. |
-| `LifetimeIntent` | Reducer-driven executor for repeatable intents. |
-| `LifetimeResources` | Lazy resources and scope-shaped invalidation. |
-| `LifetimeSwiftUI` | Mount scoped components into SwiftUI. |
-
-Each module's types are `Sendable`. Each carries the same contract: explicit
-ownership, idempotent cancellation, and deterministic teardown via
-`await cancel()`.
-
-`await cancel()` is the contract. `deinit` is a **fallback only** — when
-the last reference is dropped without an explicit cancel, teardown fires
-on a detached task as a backstop against leaks. The trigger site does not
-block and completion is not observable. Do not rely on `deinit` for
-ordering, sequencing, or any teardown a test or shutdown sequence needs
-to wait on.
+This is an intentionally breaking redesign. The previous satellite products and
+all other APIs have been removed; see [CHANGELOG.md](CHANGELOG.md).
 
 ## Installation
 
+Requires Swift 6.2+, Swift 6 language mode, and macOS 15+, iOS 18+, tvOS 18+,
+or watchOS 11+. Linux is supported. There are no package dependencies.
+
+The new API is unreleased. Pin a revision containing it, or track `main` while
+evaluating the redesign:
+
 ```swift
-dependencies: [
-  .package(url: "https://github.com/GoodHatsLLC/swift-lifetime.git", from: "1.0.0")
-]
+.package(url: "https://github.com/GoodHatsLLC/swift-lifetime.git", branch: "main")
 ```
 
+Add `.product(name: "Lifetime", package: "swift-lifetime")` to your target.
+The 1.0.0 tag contains the previous API.
+
+## Start tracked work
+
 ```swift
-targets: [
-  .target(
-    name: "MyApp",
-    dependencies: [
-      .product(name: "Lifetime", package: "swift-lifetime")
-    ]
-  )
-]
+import Lifetime
+
+let app = Scope.root(name: "app")
+let screen = try app.child(name: "screen")
+let greeting = try screen.start(name: "greeting") { "Hello" }
+print(try await greeting.value)
+
+await screen.cancel()  // Joins all work and cleanup in this subtree.
+await app.cancel()
 ```
 
-Add other modules as you need them, e.g. `"LifetimeBoundaries"` for sync→async
-callback owners, or `"LifetimePolicies"` for injectable sleepers/retries.
+`start` registers the operation before it can execute. A closed scope throws
+without invoking the operation. It returns a passive observer; ignoring or
+retaining that observer does not affect the work's lifetime. Finished `start`
+registrations are released automatically.
 
-## Scope Model
+Both `Work` and `Scope.start` inherit the caller's actor isolation and task locals.
+Call them from a `@MainActor` function for main-actor work, or from another actor
+for work on that actor. `priority:` is optional. There is no separate main-actor
+work type or public detached-task wrapper.
 
-`Lifetime` gives you a small, composable runtime surface:
+Operations use Swift's `sending` checks: non-Sendable captures may be transferred
+exclusively or shared within one actor, but cannot remain concurrently accessible
+from another isolation domain.
 
-| Type | Role |
-|------|------|
-| `Scope` | A lifecycle boundary that owns children and teardown actions. |
-| `Resource<Value>` | A caller-owned runtime value with async teardown. |
-| `ResourceFactory<Input, Value>` | Builds transient `Resource` handles on demand. |
-| `Child<Exports>` | A child `Scope` plus typed exported values. |
-| `ChildFactory<Input, Exports>` | Builds transient child lifetimes on demand. |
-| `Continuation<Value>` | A single-yield async coordination primitive. |
+Observe errors through `WorkResult.value`. Cancellation waits for completion
+without rethrowing an operation's error. Swift cancellation is cooperative:
+operations must respond to cancellation and await all their structured children
+and asynchronous cleanup before returning.
 
-Every type is `Sendable`. Cancellation is idempotent. Dropping the last strong
-reference triggers cleanup from `deinit` as a safety net.
-Factories do not keep their originating `Scope` alive, and `make(...)` throws
-`ScopeError.cancelled` once that scope has ended.
-
-## Core Concepts
-
-### Scoped Ownership
+## Transfer existing work
 
 ```swift
-let root = Scope.root()
-let sessionID = try await root.start("Session") {
-  UUID().uuidString
+let scope = Scope.root()
+let work = Work { 42 }
+let result = work.result
+try await scope.adopt(consume work, name: "answer")
+print(try await result.value)
+await scope.cancel()
+```
+
+Adoption consumes the handle. Success transfers cancellation ownership to the
+scope. If the scope is closed, adoption cancels **and drains** the supplied work
+before throwing `.closed`. A rejected registration is not part of the tree;
+its adopting caller owns that drain until the call returns.
+
+A standalone `Work` can remain active while its owner is retained. Dropping the
+owner synchronously calls the underlying task's cancellation request. Retaining
+`work.result` does not keep that owner alive. Deinit cannot await completion;
+use `await work.cancel()` or adopt the work into a scope when completion matters.
+
+Unlike `start`, generic adoption retains its handle until scope cancellation,
+because `LifetimeHandle` has no independent completion notification. Prefer
+`start` for repeated operations in a long-lived scope.
+
+When targeting Swift 6.2, share a `Scope` between concurrent cancellation callers.
+That compiler rejects some concurrent captures of a local noncopyable `Work`;
+the scope provides a shared reference while retaining unique ownership of the work.
+
+## Tree and cancellation rules
+
+- Only `Scope.root` and `scope.child` create nodes. Parentage never changes.
+  `Scope` does not conform to `LifetimeHandle`, so `scope.adopt(scope)` does not
+  compile. There is no arbitrary scope adoption, detachment, or reparenting.
+- Cancelling a scope permanently closes it and all descendants to admission.
+  A concurrent registration is either included or rejected. Siblings outside
+  the subtree remain open.
+- Sibling work is cancelled concurrently. Repeated and concurrent `cancel()`
+  calls join the same completion. Cancelling a waiting caller does not make
+  that caller return before cleanup completes.
+- Keep public scope references for as long as their subtrees should live.
+  Dropping the last reference requests subtree cancellation. A parent stores
+  a child's internal completion records, not a reference to its public handle.
+  Dropping a child therefore requests cancellation, and the parent can still
+  await its cleanup. Dropping a root cancels even retained descendants.
+- From **inside** a subtree, use `scope.requestCancellation()`. Awaiting
+  `scope.cancel()` there would wait for the caller itself. Detected self-await
+  cycles fail a precondition instead of hanging. Await `cancel()` from outside
+  the target subtree.
+
+For example, this is valid:
+
+```swift
+let result = try scope.start {
+  scope.requestCancellation()
+  return "shutdown requested"
 }
-await root.cancel()
+// Outside the operation:
+await scope.cancel()
 ```
 
-### Structured Helpers
+The operation may be skipped with `CancellationError` if cancellation wins the
+startup race.
+
+## Custom leaf work
 
 ```swift
-let result = try await Scope.withRoot { root in
-  try await root.withResource("Client", create: { APIClient() }, destroy: { c in
-    await c.shutdown()
-  }) { client in
-    try await root.withChild(name: "Session", build: { child in
-      SessionExports(token: try await child.start("Token") { "tok-123" })
-    }) { session in
-      try await client.fetch(token: session.exports.token)
-    }
-  }
+public protocol LifetimeHandle: Sendable, ~Copyable {
+  borrowing func cancel() async
 }
 ```
 
-Also available: `withChildScope` and `withLifetime`.
+A conformer must initiate cancellation when needed and return only when **all**
+represented work and cleanup has finished. Concurrent/repeated calls must join
+the same completion, even if cancellation started independently. A cancelled
+calling task must still wait. Conformers may also cancel themselves or cancel
+on deinit; neither changes this contract.
 
-### Caller-Owned Factories
+The protocol permits reference types and copyable values as well as noncopyable
+values. It cannot prove a custom implementation's semantics or prevent aliases
+of the same underlying operation. Register each logical leaf once. Do not use a
+custom handle to wrap/reparent a scope or create dependencies that await their
+own subtree. `Work` enforces unique ownership of its cancellation handle through
+noncopyability; custom conformers are responsible for their own ownership rules.
 
-Use a factory when the same shape of child or resource is produced many
-times and the caller — not a structured `with…` block — decides when each
-instance ends. Each call to `make(...)` produces a fresh, independently
-cancellable handle.
+The guarantees cover faithfully represented work. Untracked `Task` instances,
+unawaited side effects, dependency cycles between leaves, and operations that
+ignore cancellation cannot be repaired by a scope. Likewise, deinit runs only
+when the owner is actually released: an operation retaining its own scope can
+keep it alive. Use explicit awaited cancellation at lifecycle boundaries.
 
-```swift
-let makeSession = try root.childFactory(name: "Session") { (userID: String, child: Scope) in
-  let token = try await child.start("Token") { "tok-\(userID)" }
-  return SessionExports(userID: userID, token: token)
-}
+## Development
 
-func handle(userID: String) async throws {
-  let session = try await makeSession.make(userID)
-  do {
-    try await doWork(with: session.exports)
-    await session.cancel()
-  } catch {
-    await session.cancel()
-    throw error
-  }
-}
+```sh
+swift build
+swift test
+swift test -c release
+python3 Scripts/check-api.py
+swift format lint --recursive --strict Sources Tests Package.swift
 ```
 
-Prefer this awaited-`cancel()` shape over fire-and-forget tear-down. A
-factory-produced handle is also adoptable into another scope via
-``Scope/adopt(_:)`` or ``Scope/supervise(work:)`` — handing it off to a
-parent that already has a teardown sequence is usually a better answer
-than spinning up an unstructured `Task` just to cancel it.
-
-### Teardown Policy
-
-`Scope.root()` defaults to `.serialLIFO`. Children and cancellation actions
-(resources, adopted handles, `onCancel` work) share a single registration
-log inside the scope; the policy controls how that log is walked at
-cancellation time.
-
-- `.serialLIFO`: walks the unified log in strict reverse registration
-  order, one entry at a time. A child registered after a resource is
-  torn down before that resource, and vice versa. Default.
-- `.parallelUnordered`: cancels all children concurrently, then runs all
-  cancellation actions concurrently. The two phases stay sequenced so
-  destroy hooks outlive child teardown. Use when teardown throughput
-  matters more than strict ordering.
-
-### Launch Policy
-
-Builder work runs inline by default. Use `.detached` when creation should not
-inherit the caller's task context.
-
-## Cancellation Guarantees
-
-- `Scope.cancel()`, `Resource.cancel()`, and `Child.cancel()` are idempotent.
-- Cancelling a scope cascades through all children and registered teardown work.
-- `Scope.cancel()` waits for in-flight `start` and `withResource` teardown before returning.
-- Creating from a cancelled scope throws `ScopeError.cancelled`.
-- Dropping the last reference to a `Scope`, `Resource`, or `Child` fires
-  `deinit` as a **fallback only**: teardown runs on a detached task, the
-  trigger site does not block, and completion is not observable. Always
-  prefer `await cancel()`; treat `deinit` purely as a leak backstop.
-
-## Benchmarks
-
-The root package includes `LifetimeBenchmarks`:
-
-```bash
-swift run -c release LifetimeBenchmarks
-```
-
-Current baseline targets (release build, Apple Silicon M-series Mac;
-release mode is required — debug numbers will be roughly 5–10× higher
-and are not meaningful for regression checks):
-
-| Benchmark | Baseline | Observed (median) |
-|-----------|---------:|------------------:|
-| `start.inline.createCancelScope` | 2,800 ns/op | ~2,400 ns/op |
-| `withResource.inline.createCancelScope` | 4,200 ns/op | ~3,600 ns/op |
-| `childFactory.makeCancelScope` | 3,900 ns/op | ~3,400 ns/op |
-| `withChild.input.createCancelScope` | 3,700 ns/op | ~3,000 ns/op |
-| `scope.cancel.adopt100Resources` | 68,500 ns/op | ~59,400 ns/op |
-
-Four of the five benchmarks carry roughly 15% headroom above their
-observed medians. `withChild` is set at 20% headroom because its
-observed tail extends further (35% above median vs ≤22% for the
-others); at these sub-microsecond ops, absolute jitter becomes a
-larger relative share. Combined with the ±20% detection band, the
-"slower" trigger sits at median × 1.38–1.44 — tight enough to flag
-real drift without false positives on ordinary machine noise. The
-`adopt100Resources` benchmark runs 2000 iterations rather than the
-500 used elsewhere; the cancel walk it exercises is sensitive to
-cooperative-pool latency spikes that only average out across enough
-samples. Numbers will vary across hardware; treat the relative
-magnitudes as the contract, not the absolutes.
-
-### Complexity and memory
-
-- **Cancel walk is O(n)** in the number of live + tombstoned entries
-  registered on the scope. `.serialLIFO` walks the array once in reverse;
-  `.parallelUnordered` partitions it into children and actions in a
-  single pass and then dispatches each set concurrently.
-- **Tombstones are not compacted during a scope's life.** Each
-  cancelled child, completed resource, or detached supervised handle
-  leaves a tombstone in the unified registration log; the array is only
-  freed when the scope itself transitions to `.cancelled`. Long-lived
-  scopes with high registration churn (e.g. one per HTTP request) hold
-  memory proportional to *total ever-registered* entries, not currently-
-  live ones. For workloads with that shape, prefer a fresh child scope
-  per logical unit so the parent can reclaim the whole log at once.
-- **Cancel is bounded by the slowest child or action.** Under
-  `.serialLIFO` every step is awaited serially, so a single slow
-  `destroy` closure dictates total teardown time. Under
-  `.parallelUnordered` the phase times reduce to the slowest child
-  followed by the slowest action.
-- **Per-scope overhead** is a `Mutex`-protected storage struct plus the
-  registration array. Sendable closures captured by `start`,
-  `withResource`, and `onCancel` are the dominant retained payload —
-  size your captures accordingly when registering thousands of entries
-  on one scope.
-
-## Tests
-
-The Swift Testing suite covers:
-
-- structured helper lifecycle guarantees
-- cancellation policy behavior and teardown ordering
-- idempotent cancellation under concurrent calls
-- deinit-triggered cleanup for dropped handles
-- factory-after-cancel failure behavior
-- detached launch semantics and shutdown races
-- `Continuation` replay and double-yield errors
-- per-module suites for `LifetimePrimitives`, `LifetimeBoundaries`,
-  `LifetimePolicies`, and `LifetimeIntent`
-
-## License
-
-MIT
+Tests use deterministic gates for teardown ordering and subprocesses for
+self-await preconditions. Compile checks verify consuming ownership and the
+absence of scope adoption. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[docs/internals.md](docs/internals.md).

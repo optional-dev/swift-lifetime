@@ -3,9 +3,3 @@ builder:
   configs:
     - documentation_targets:
         - Lifetime
-        - LifetimePrimitives
-        - LifetimeBoundaries
-        - LifetimePolicies
-        - LifetimeIntent
-        - LifetimeResources
-        - LifetimeSwiftUI
