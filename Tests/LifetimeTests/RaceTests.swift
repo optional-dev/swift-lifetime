@@ -24,7 +24,7 @@ struct RaceTests {
           await start.wait()
           let cancelled = Gate()
           do {
-            let result = try child.start {
+            let work = Work {
               #expect(!cancellationReturned.isOpen)
               running.increment()
               await withTaskCancellationHandler {
@@ -34,6 +34,7 @@ struct RaceTests {
               }
               running.decrement()
             }
+            let result = try child.start(consume work)
             do { try await result.value } catch { #expect(error is CancellationError) }
           } catch {
             #expect(error as? ScopeError == .closed)

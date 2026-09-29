@@ -44,6 +44,7 @@ public final class Scope: Sendable {
   /// The scope retains the handle until cancellation. If admission is closed,
   /// this call cancels and fully drains the supplied work before throwing.
   /// Copyable conformers must not be aliased into multiple registrations.
+  /// Use ``start(_:name:)`` for deferred ``Work`` values.
   public func adopt<Handle: LifetimeHandle & ~Copyable>(
     _ handle: consuming Handle,
     name: String? = nil
@@ -67,11 +68,24 @@ public final class Scope: Sendable {
     priority: TaskPriority? = nil,
     @_inheritActorContext operation: sending @escaping @isolated(any) () async throws -> Value
   ) throws(ScopeError) -> WorkResult<Value> {
+    try start(Work(inheriting: isolation, priority: priority, operation: operation), name: name)
+  }
+
+  /// Consumes deferred work, registering it before scheduling its operation.
+  ///
+  /// Rejection throws without creating a task and discards the operation.
+  /// Completed work is automatically released by the scope. The operation keeps
+  /// its original actor isolation; task locals and the default priority come
+  /// from this call. The result observer does not keep the scope alive.
+  public func start<Value: Sendable>(
+    _ work: consuming Work<Value>,
+    name: String? = nil
+  ) throws(ScopeError) -> WorkResult<Value> {
     let registration = WorkRegistration(name: name)
     guard tree.insert(registration, into: node) else { throw .closed }
-    let work = Work(inheriting: isolation, priority: priority, operation: operation)
-    let result = work.result
-    registration.install(consume work)
+    let running = work.launch()
+    let result = running.result
+    registration.install(consume running)
     let tree = tree
     let node = node
     Task.detached {

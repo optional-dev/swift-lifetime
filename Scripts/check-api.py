@@ -41,13 +41,18 @@ fixtures = {
         ) async throws {
           try await scope.adopt(consume handle)
         }
+        func prepare() -> Work<Int> { Work { 42 } }
+        func forward<V: Sendable>(
+          _ work: consuming Work<V>, into scope: Scope
+        ) throws -> WorkResult<V> {
+          try scope.start(consume work)
+        }
         func useAPI() async throws {
           let root = Scope.root()
           let child = try root.child()
-          let work = Work { 42 }
-          let result = work.result
-          try await forward(consume work, into: child)
-          try await root.adopt(ExternalLeaf())
+          let work = prepare()
+          let result = try forward(consume work, into: child)
+          try await forward(ExternalLeaf(), into: root)
           let started = try root.start { "value" }
           _ = try await result.value
           _ = try await started.value
@@ -62,11 +67,11 @@ fixtures = {
           let counter = Counter()
           let root = Scope.root()
           let work = Work { counter.value += 1 }
+          let deferred = try root.start(consume work)
           let result = try root.start { counter.value += 1 }
           counter.value += 1
-          try await work.result.value
+          try await deferred.value
           try await result.value
-          await work.cancel()
           await root.cancel()
         }
     """),
@@ -75,19 +80,24 @@ fixtures = {
         final class Counter { var value = 0 }
         func valid() async throws {
           let counter = Counter()
+          let root = Scope.root()
           let work = Work { counter.value += 1; return counter.value }
-          _ = try await work.result.value
-          await work.cancel()
+          let result = try root.start(consume work)
+          _ = try await result.value
+          await root.cancel()
         }
     """),
     "work_rejects_unsafe_capture_sharing": ("sending", """
         import Lifetime
         final class Counter { var value = 0 }
-        func invalid() async {
+        func invalid() async throws {
           let counter = Counter()
+          let root = Scope.root()
           let work = Work { counter.value += 1 }
           counter.value += 1
-          await work.cancel()
+          let result = try root.start(consume work)
+          try await result.value
+          await root.cancel()
         }
     """),
     "start_rejects_unsafe_capture_sharing": ("sending", """
@@ -116,13 +126,48 @@ fixtures = {
           try await scope.adopt(Task { 42 })
         }
     """),
-    "consumed_work_cannot_be_reused": ("consum", """
+    "deferred_work_is_not_a_leaf": ("LifetimeHandle", """
         import Lifetime
         func invalid() async throws {
           let scope = Scope.root()
           let work = Work { 42 }
           try await scope.adopt(consume work)
+        }
+    """),
+    "generic_adoption_cannot_accept_work": ("LifetimeHandle", """
+        import Lifetime
+        func forward<H: LifetimeHandle & ~Copyable>(
+          _ handle: consuming H, into scope: Scope
+        ) async throws {
+          try await scope.adopt(consume handle)
+        }
+        func invalid() async throws {
+          let scope = Scope.root()
+          let work = Work { 42 }
+          try await forward(consume work, into: scope)
+        }
+    """),
+    "unstarted_work_has_no_result": ("result", """
+        import Lifetime
+        func invalid() {
+          let work = Work { 42 }
+          _ = work.result
+        }
+    """),
+    "unstarted_work_has_no_cancel": ("cancel", """
+        import Lifetime
+        func invalid() async {
+          let work = Work { 42 }
           await work.cancel()
+        }
+    """),
+    "consumed_work_cannot_be_reused": ("consum", """
+        import Lifetime
+        func invalid() async throws {
+          let scope = Scope.root()
+          let work = Work { 42 }
+          _ = try scope.start(consume work)
+          _ = try scope.start(consume work)
         }
     """),
     "work_cannot_be_duplicated": ("consum", """
@@ -131,8 +176,8 @@ fixtures = {
           let scope = Scope.root()
           let work = Work { 42 }
           let alias = work
-          try await scope.adopt(consume work)
-          try await scope.adopt(consume alias)
+          _ = try scope.start(consume work)
+          _ = try scope.start(consume alias)
         }
     """),
     "observer_cannot_cancel": ("cancel", """

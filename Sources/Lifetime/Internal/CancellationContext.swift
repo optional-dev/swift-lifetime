@@ -12,10 +12,9 @@ final class ScopeToken: Sendable, Hashable {
   func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
 }
 
-// Registration is generic over noncopyable handles, which cannot be downcast to
-// Work. Detect the cycle at either end of the wait instead: Scope.cancel records
-// a wait, and Work.cancel records its cancelling scope's ancestry. One mutex
-// makes both orderings safe, including Work hidden inside a custom handle.
+// Detect cycles at either end of a wait: Scope.cancel records a wait, and
+// RunningWork.cancel records its cancelling scope's ancestry. One mutex makes
+// both orderings safe, including cancellation racing task creation/installation.
 final class WorkIdentity: Sendable {
   private struct State {
     var waits: [ScopeToken: Int] = [:]

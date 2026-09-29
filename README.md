@@ -8,7 +8,7 @@ The package vends one product, `Lifetime`, with five public types:
 | --- | --- |
 | `Scope` | A reference to a tree node; creates children and owns leaf registrations. |
 | `LifetimeHandle` | The contract `borrowing func cancel() async`: request cancellation and await all represented work and cleanup. |
-| `Work<Value>` | A noncopyable cancellation owner for an async operation; requests cancellation on deinit. |
+| `Work<Value>` | A noncopyable, deferred operation consumed when a scope starts it. |
 | `WorkResult<Value>` | A copyable result observer that carries no cancellation ownership. |
 | `ScopeError` | `.closed`, thrown when a scope cannot admit a child or work. |
 
@@ -49,10 +49,12 @@ without invoking the operation. It returns a passive observer; ignoring or
 retaining that observer does not affect the work's lifetime. Finished `start`
 registrations are released automatically.
 
-Both `Work` and `Scope.start` inherit the caller's actor isolation and task locals.
-Call them from a `@MainActor` function for main-actor work, or from another actor
-for work on that actor. `priority:` is optional. There is no separate main-actor
-work type or public detached-task wrapper.
+Both `Work` construction and inline `Scope.start` preserve the caller's actor
+isolation. Call them from a `@MainActor` function for main-actor work, or from
+another actor for work on that actor. Task locals and the default priority are
+inherited from the caller that starts the work. An explicit `priority:` supplied
+at construction is preserved. There is no separate main-actor work type or public
+detached-task wrapper.
 
 Operations use Swift's `sending` checks: non-Sendable captures may be transferred
 exclusively or shared within one actor, but cannot remain concurrently accessible
@@ -63,34 +65,52 @@ without rethrowing an operation's error. Swift cancellation is cooperative:
 operations must respond to cancellation and await all their structured children
 and asynchronous cleanup before returning.
 
-## Transfer existing work
+## Prepare work separately
+
+Construct and pass around work before choosing its scope. Construction stores the
+operation without creating or scheduling a task. Starting consumes the value, so
+each `Work` can be started only once.
 
 ```swift
 let scope = Scope.root()
-let work = Work { 42 }
-let result = work.result
-try await scope.adopt(consume work, name: "answer")
+func prepareAnswer() -> Work<Int> {
+  Work { 42 }
+}
+
+let work = prepareAnswer()  // Nothing is scheduled yet.
+let result = try scope.start(consume work, name: "answer")
 print(try await result.value)
 await scope.cancel()
 ```
 
-Adoption consumes the handle. Success transfers cancellation ownership to the
-scope. If the scope is closed, adoption cancels **and drains** the supplied work
-before throwing `.closed`. A rejected registration is not part of the tree;
-its adopting caller owns that drain until the call returns.
+Dropping unstarted work discards its operation and releases its captures without
+invoking it. Starting in a closed scope consumes and discards the work, throwing
+`.closed` without creating a task. Both forms of `start` register before scheduling
+and automatically release finished registrations.
 
-A standalone `Work` can remain active while its owner is retained. Dropping the
-owner synchronously calls the underlying task's cancellation request. Retaining
-`work.result` does not keep that owner alive. Deinit cannot await completion;
-use `await work.cancel()` or adopt the work into a scope when completion matters.
+`Work` has no `result` or `cancel()` and does not conform to `LifetimeHandle`.
+Obtain the result observer from `scope.start`, and use the scope to cancel running
+work. Retaining an observer does not keep the scope alive. Dropping the scope
+requests cancellation but cannot await completion; use `await scope.cancel()`
+when completion matters.
+
+Deferred work retains its original operation's actor isolation even when another
+actor starts it. Task locals, such as tracing context, come from the start call,
+not the construction call. Captured values are retained at construction time;
+deferring execution does not defer evaluating capture expressions.
+
+## Adopt external work
+
+Use `try await scope.adopt(handle)` to transfer cancellation ownership of an
+external `LifetimeHandle`. Adoption does not start or activate the handle. If the
+scope is closed, adoption cancels **and drains** the supplied handle before
+throwing `.closed`. A rejected registration is not part of the tree; its adopting
+caller owns that drain until the call returns.
 
 Unlike `start`, generic adoption retains its handle until scope cancellation,
-because `LifetimeHandle` has no independent completion notification. Prefer
-`start` for repeated operations in a long-lived scope.
-
-When targeting Swift 6.2, share a `Scope` between concurrent cancellation callers.
-That compiler rejects some concurrent captures of a local noncopyable `Work`;
-the scope provides a shared reference while retaining unique ownership of the work.
+because `LifetimeHandle` has no independent completion notification. Use
+`scope.start(work)` for deferred `Work` values; they cannot be adopted, including
+through generic forwarding functions.
 
 ## Tree and cancellation rules
 
@@ -145,8 +165,8 @@ The protocol permits reference types and copyable values as well as noncopyable
 values. It cannot prove a custom implementation's semantics or prevent aliases
 of the same underlying operation. Register each logical leaf once. Do not use a
 custom handle to wrap/reparent a scope or create dependencies that await their
-own subtree. `Work` enforces unique ownership of its cancellation handle through
-noncopyability; custom conformers are responsible for their own ownership rules.
+own subtree. `Work` enforces a single transfer into a scope through noncopyability;
+custom conformers are responsible for their own ownership rules.
 
 The guarantees cover faithfully represented work. Untracked `Task` instances,
 unawaited side effects, dependency cycles between leaves, and operations that

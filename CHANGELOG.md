@@ -3,10 +3,8 @@
 All notable changes to `swift-lifetime` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-The unreleased redesign below is intentionally source-breaking and requires a
-major release. The 1.0.0 entry describes the previous API.
 
-## [Unreleased]
+## 3.0.0
 
 ### Changed
 
@@ -20,14 +18,22 @@ major release. The 1.0.0 entry describes the previous API.
 - Cancellation closes the entire subtree atomically, cancels siblings
   concurrently, and makes every caller await the same completion. Dropping a
   child no longer loses its parent's ability to await cleanup.
-- `Work` requests cancellation on deinit. Retaining its result observer does
-  not retain cancellation ownership. Work and scope start inherit caller actor
-  isolation, including the main actor.
+- **Breaking:** `Work` is now a deferred, single-use operation. Construction
+  creates no task; `Scope.start(work)` consumes and registers it before scheduling.
+  Dropped or rejected work is discarded without invocation. Both forms of start
+  automatically release completed work and return passive result observers that
+  do not keep the scope alive.
+- Deferred work preserves the actor isolation of its construction context,
+  including the main actor. Task locals and default priority are inherited at
+  start time; an explicit priority is preserved.
 - Known self-await cycles fail a precondition. `requestCancellation()` lets
   work initiate its own subtree's cancellation without awaiting itself.
 
 ### Removed
 
+- `Work.result`, `Work.cancel()`, and `Work`'s `LifetimeHandle` conformance.
+  Obtain results from `Scope.start` and cancel through the scope. Generic
+  adoption remains available for external cancellation handles.
 - All previous APIs except the redesigned `Scope` and `LifetimeHandle`,
   including resource/child wrappers and factories, task handles, continuation
   utilities, policies, snapshots, and supervision.

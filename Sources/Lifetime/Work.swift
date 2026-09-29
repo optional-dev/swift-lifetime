@@ -1,16 +1,22 @@
-/// A unique cancellation owner for an asynchronous operation.
+import Synchronization
+
+/// A deferred, single-use asynchronous operation.
 ///
-/// Dropping this value synchronously requests task cancellation. Use ``cancel()``
-/// or adopt it into a ``Scope`` to also await completion. The operation must
-/// cooperate with cancellation and await all work and cleanup it starts.
-public struct Work<Value: Sendable>: LifetimeHandle, ~Copyable {
-  private let task: Task<Value, any Error>
+/// Construction does not create a task. Pass this value to ``Scope/start(_:name:)``
+/// to register and schedule it, or drop it to discard the operation. Work cannot
+/// be adopted as a ``LifetimeHandle``. The operation must cooperate with
+/// cancellation and await all work and cleanup it starts.
+public struct Work<Value: Sendable>: Sendable, ~Copyable {
+  // A sending closure need not be Sendable. The mutex permits transferring it
+  // into storage, across callers, and finally into exactly one task.
+  private let operation: Mutex<(@isolated(any) () async throws -> Value)?>
+  private let priority: TaskPriority?
   private let identity: WorkIdentity
 
-  /// Starts an operation, inheriting the caller's actor isolation and task locals.
+  /// Prepares an operation, preserving the caller's actor isolation.
   ///
-  /// The task checks for cancellation before invoking the operation.
-  /// The operation's value or error is available through ``result``.
+  /// Task locals and the default priority are inherited when a scope starts the
+  /// work, not when it is constructed. An explicit priority is preserved.
   public init(
     inheriting isolation: isolated (any Actor)? = #isolation,
     priority: TaskPriority? = nil,
@@ -18,7 +24,10 @@ public struct Work<Value: Sendable>: LifetimeHandle, ~Copyable {
   ) {
     let identity = WorkIdentity()
     self.identity = identity
-    task = Task(priority: priority) {
+    self.priority = priority
+    // Preserve isolation for the cancellation check as well as the operation.
+    // Only the body is prepared here; launch creates the task after admission.
+    self.operation = Mutex {
       _ = isolation
       return try await CancellationContext.$ancestors.withValue([]) {
         try await CancellationContext.$work.withValue(identity) {
@@ -29,33 +38,21 @@ public struct Work<Value: Sendable>: LifetimeHandle, ~Copyable {
     }
   }
 
-  /// An observer that does not keep this cancellation owner alive.
-  public var result: WorkResult<Value> {
-    WorkResult(task: task, identity: identity)
-  }
-
-  /// Requests cancellation and waits for the operation and its cleanup to finish.
-  ///
-  /// Concurrent and repeated calls all await task completion. The calling task's
-  /// cancellation does not shorten the wait. An operation cannot await its own
-  /// completion, directly or through cancellation of an owning scope.
-  public borrowing func cancel() async {
-    precondition(CancellationContext.work !== identity, "Work cannot await its own cancellation.")
-    identity.recordCancellation(in: CancellationContext.ancestors)
-    task.cancel()
-    _ = await task.result
-  }
-
-  deinit {
-    task.cancel()
+  consuming func launch() -> RunningWork<Value> {
+    let operation = operation.withLock { stored in
+      let operation = stored!
+      stored = nil
+      return operation
+    }
+    return RunningWork(priority: priority, identity: identity, operation: operation)
   }
 }
 
 /// A copyable, passive observer of a ``Work`` operation's eventual value or error.
 ///
-/// Keeping an observer does not prevent cancellation when the work owner is
-/// dropped. Cancelling an observer's awaiting task does not cancel the operation
-/// or stop awaiting its result.
+/// Obtained by starting work in a ``Scope``. Keeping an observer does not keep
+/// the scope alive. Cancelling an observer's awaiting task does not cancel the
+/// operation or stop awaiting its result.
 public struct WorkResult<Value: Sendable>: Sendable {
   let task: Task<Value, any Error>
   let identity: WorkIdentity

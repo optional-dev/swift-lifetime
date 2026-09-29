@@ -5,7 +5,8 @@ Track asynchronous work in a tree and await cancellation of any subtree.
 ## Overview
 
 Create a ``Scope`` root and immutable children. Register work with
-``Scope/start(name:inheriting:priority:operation:)`` or transfer a
+``Scope/start(name:inheriting:priority:operation:)``, start a separately prepared
+``Work`` with ``Scope/start(_:name:)``, or transfer an external
 ``LifetimeHandle`` using ``Scope/adopt(_:name:)``. Scopes are structural nodes;
 handles are leaf work. A scope cannot be adopted as a handle.
 
@@ -24,10 +25,16 @@ already started by a dropped child. Calling-task cancellation does not shorten
 that wait. A rejected start never invokes its operation; rejected adoption
 cancels and drains its supplied work before throwing ``ScopeError/closed``.
 
-``Work`` is a noncopyable owner that requests task cancellation on deinit.
-``WorkResult`` observes its result without keeping that owner alive. Deinit
-requests cancellation but cannot await cleanup: use awaited cancellation when
-completion matters. Work and scope start inherit the caller's actor isolation.
+``Work`` is a noncopyable deferred operation. Construction creates no task;
+dropping unstarted work discards it without invocation. Starting consumes the work
+and returns a ``WorkResult`` observer. Work has no standalone result or
+cancellation method and cannot be adopted as a ``LifetimeHandle``.
+
+The operation preserves the actor isolation of its construction context. Task
+locals and default priority come from the caller that starts it; an explicit
+priority supplied at construction is preserved. Both forms of start automatically
+release completed registrations. Result observers do not keep the scope alive.
+Use awaited scope cancellation when completion matters.
 
 Keep public scope handles alive while their subtrees should run. Dropping a scope
 requests subtree cancellation, even when descendants retain their own handles.

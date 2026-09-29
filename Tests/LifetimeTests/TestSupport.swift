@@ -86,12 +86,6 @@ final class Leaf: LifetimeHandle {
   }
 }
 
-struct WrappedWork<Value: Sendable>: LifetimeHandle, ~Copyable {
-  let work: Work<Value>
-
-  func cancel() async { await work.cancel() }
-}
-
 final class DeinitSignal: Sendable {
   let signal: Gate
   init(_ signal: Gate) { self.signal = signal }

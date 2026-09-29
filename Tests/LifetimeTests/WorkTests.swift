@@ -1,50 +1,102 @@
+import Synchronization
 import Testing
 
 @testable import Lifetime
 
 @Suite(.timeLimit(.minutes(1)))
 struct WorkTests {
-  @Test func droppingOwnerCancelsWhileObserverSurvives() async throws {
-    let events = WorkEvents()
-    let result: WorkResult<Bool>
-    do {
-      let work = Work { await events.run() }
-      result = work.result
-      await events.started.wait()
-      _ = consume work
+  @Test @MainActor func droppingUnstartedWorkReleasesCapturesWithoutInvocation() {
+    let invoked = Gate()
+    let released = Gate()
+    func makeWork() -> Work<Void> {
+      let resource = DeinitSignal(released)
+      return Work {
+        withExtendedLifetime(resource) {}
+        invoked.open()
+      }
     }
-    // The cancellation handler runs synchronously during Work.deinit.
-    #expect(events.cancelled.isOpen)
+    let work = makeWork()
+    #expect(!invoked.isOpen)
+    #expect(!released.isOpen)
+    _ = consume work
+    #expect(released.isOpen)
+    #expect(!invoked.isOpen)
+  }
+
+  @Test @MainActor func rejectedWorkIsDiscardedWithoutInvocation() async {
+    let scope = Scope.root()
+    await scope.cancel()
+    let invoked = Gate()
+    let released = Gate()
+    func makeWork() -> Work<Void> {
+      let resource = DeinitSignal(released)
+      return Work {
+        withExtendedLifetime(resource) {}
+        invoked.open()
+      }
+    }
+    let work = makeWork()
+    do {
+      _ = try scope.start(consume work)
+      Issue.record("A closed scope accepted work")
+    } catch {
+      #expect(error == .closed)
+    }
+    #expect(released.isOpen)
+    #expect(!invoked.isOpen)
+  }
+
+  @Test func droppingScopeCancelsWhileObserverSurvives() async throws {
+    let events = WorkEvents()
+    var scope: Scope? = Scope.root()
+    weak let weakScope = scope
+    let work = Work { await events.run() }
+    let result = try #require(scope).start(consume work)
+    await events.started.wait()
+    scope = nil
+    #expect(weakScope == nil)
+    await events.cancelled.wait()
     #expect(!events.finished.isOpen)
     events.release.open()
     #expect(try await result.value)
     #expect(events.finished.isOpen)
   }
 
-  @Test func cancelWaitsForCleanupAndSupportsConcurrentBorrowers() async throws {
+  @Test @MainActor func cancellationBeforeActorExecutionSkipsOperation() async throws {
+    let scope = Scope.root()
+    let invoked = Gate()
+    let work = Work { invoked.open() }
+    let result = try scope.start(consume work)
+    // Cancel the underlying task synchronously while its actor is still occupied.
+    result.task.cancel()
+    await #expect(throws: CancellationError.self) { try await result.value }
+    #expect(!invoked.isOpen)
+    await scope.cancel()
+  }
+
+  @Test func cancelWaitsForCleanupAndSupportsConcurrentCallers() async throws {
+    let scope = Scope.root()
     let events = WorkEvents()
     let work = Work { await events.run() }
-    let result = work.result
+    let result = try scope.start(consume work)
     await events.started.wait()
-    // Capture the noncopyable owner once; Swift 6.2 can share the resulting
-    // Sendable closure between concurrent borrowers, as adoption does.
-    let cancel: @Sendable () async -> Void = { await work.cancel() }
-    async let first: Void = cancel()
-    async let second: Void = cancel()
+    async let first: Void = scope.cancel()
+    async let second: Void = scope.cancel()
     await events.cancelled.wait()
     #expect(!events.finished.isOpen)
     events.release.open()
     await first
     #expect(events.finished.isOpen)
     await second
-    await cancel()
+    await scope.cancel()
     #expect(try await result.value)
   }
 
   @Test func alreadyCancelledCallerStillDrainsWork() async throws {
+    let scope = Scope.root()
     let events = WorkEvents()
     let work = Work { await events.run() }
-    let result = work.result
+    let result = try scope.start(consume work)
     await events.started.wait()
     let callerStarted = Gate()
     let callerProceed = Gate()
@@ -52,7 +104,7 @@ struct WorkTests {
       callerStarted.open()
       await callerProceed.wait()
       #expect(Task.isCancelled)
-      await work.cancel()
+      await scope.cancel()
       #expect(events.finished.isOpen)
     }
     await callerStarted.wait()
@@ -67,25 +119,28 @@ struct WorkTests {
 
   @Test func resultsPreserveValuesAndErrors() async throws {
     enum Failure: Error { case expected }
+    let scope = Scope.root()
     let success = Work { 42 }
-    let observer = success.result
+    let observer = try scope.start(consume success)
     let observerCopy = observer
     #expect(try await observer.value == 42)
     #expect(try await observerCopy.value == 42)
-    await success.cancel()
-    #expect(try await observer.value == 42)
     let failure = Work<Int> { throw Failure.expected }
-    await #expect(throws: Failure.expected) { try await failure.result.value }
-    await failure.cancel()
+    let failed = try scope.start(consume failure)
+    await #expect(throws: Failure.expected) { try await failed.value }
+    await scope.cancel()
+    #expect(try await observer.value == 42)
+    await #expect(throws: Failure.expected) { try await failed.value }
   }
 
-  @Test func cancellingObserverDoesNotCancelOwnerOrShortenWait() async throws {
+  @Test func cancellingObserverDoesNotCancelWorkOrShortenWait() async throws {
+    let scope = Scope.root()
     let release = Gate()
     let work = Work {
       await release.wait()
       return Task.isCancelled
     }
-    let result = work.result
+    let result = try scope.start(consume work)
     let waiter = Task {
       let cancelled = try await result.value
       #expect(release.isOpen)
@@ -94,35 +149,28 @@ struct WorkTests {
     waiter.cancel()
     release.open()
     try await waiter.value
-    await work.cancel()
+    await scope.cancel()
   }
 
-  @Test @MainActor func inheritsMainActorAndTaskLocals() async throws {
-    try await Local.$value.withValue(17) { () async throws in
-      var actorValue = 2
-      let work = Work {
+  @Test @MainActor func preservesActorIsolationAndUsesStartTaskLocals() async throws {
+    let scope = Scope.root()
+    var actorValue = 2
+    let result = try Local.$value.withValue(17) {
+      var work: Work<Int>? = Work {
         MainActor.assertIsolated()
         actorValue += 1
         return actorValue + Local.value
       }
-      #expect(try await work.result.value == 20)
-      await work.cancel()
+      #expect(actorValue == 2)
+      return try Local.$value.withValue(23) {
+        try scope.start(work.take()!)
+      }
     }
+    #expect(try await result.value == 26)
+    await scope.cancel()
   }
 
-  @Test @MainActor func dropBeforeExecutionPreventsInvocation() async {
-    let invoked = Gate()
-    let result: WorkResult<Void>
-    do {
-      let work = Work { invoked.open() }
-      result = work.result
-      _ = consume work
-    }
-    await #expect(throws: CancellationError.self) { try await result.value }
-    #expect(!invoked.isOpen)
-  }
-
-  @Test func workAndStartInheritCustomActorIsolation() async throws {
+  @Test func deferredWorkAndInlineStartPreserveCustomActorIsolation() async throws {
     actor Owner {
       var count = 0
 
@@ -144,11 +192,30 @@ struct WorkTests {
     }
     let owner = Owner()
     let work = await owner.makeWork()
-    #expect(try await work.result.value == 1)
-    await work.cancel()
+    #expect(await owner.count == 0)
     let scope = Scope.root()
-    let result = try await owner.start(in: scope)
-    #expect(try await result.value == 2)
+    let deferred = try scope.start(consume work)
+    #expect(try await deferred.value == 1)
+    let inline = try await owner.start(in: scope)
+    #expect(try await inline.value == 2)
+    await scope.cancel()
+  }
+
+  @Test(arguments: [false, true])
+  func priorityComesFromStartUnlessExplicit(explicit: Bool) async throws {
+    let scope = Scope.root()
+    let pending = Mutex<Work<TaskPriority>?>(
+      Work(priority: explicit ? .high : nil) { Task.currentPriority }
+    )
+    let observed = Gate()
+    let starter = Task.detached(priority: .background) {
+      defer { observed.open() }
+      let result = try scope.start(pending.withLock { $0.take()! })
+      return try await result.value
+    }
+    // Observe before the higher-priority test task can escalate the starter.
+    await observed.wait()
+    #expect(try await starter.value == (explicit ? .high : .background))
     await scope.cancel()
   }
 }

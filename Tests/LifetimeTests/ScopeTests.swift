@@ -37,13 +37,12 @@ struct ScopeTests {
     await sibling.cancel()
   }
 
-  @Test func adoptionConsumesNoncopyableWorkAndRetainsOwnership() async throws {
+  @Test func startConsumesNoncopyableWorkAndRetainsOwnership() async throws {
     let scope = Scope.root()
     let events = WorkEvents()
     let work = Work { await events.run() }
-    let observer = work.result
+    let observer = try scope.start(consume work, name: "deferred")
     await events.started.wait()
-    try await scope.adopt(consume work, name: "adopted")
     #expect(!events.cancelled.isOpen)
     events.release.open()
     await scope.cancel()
@@ -54,25 +53,20 @@ struct ScopeTests {
   @Test func rejectedAdoptionDrainsBeforeThrowing() async throws {
     let scope = Scope.root()
     await scope.cancel()
-    let events = WorkEvents()
+    let leaf = Leaf()
     let rejection = Task {
-      let work = Work { await events.run() }
-      let observer = work.result
-      await events.started.wait()
       do {
-        try await scope.adopt(consume work)
+        try await scope.adopt(leaf)
         Issue.record("A closed scope accepted work")
       } catch {
         #expect(error as? ScopeError == .closed)
-        #expect(events.finished.isOpen)
+        #expect(leaf.finished.isOpen)
       }
-      let wasCancelled = try await observer.value
-      #expect(wasCancelled)
     }
-    await events.cancelled.wait()
-    #expect(!events.finished.isOpen)
-    events.release.open()
-    try await rejection.value
+    await leaf.entered.wait()
+    #expect(!leaf.finished.isOpen)
+    leaf.release.open()
+    await rejection.value
   }
 
   @Test func rejectedStartNeverInvokesOperation() async {
@@ -252,11 +246,18 @@ struct ScopeTests {
     await root.cancel()
   }
 
-  @Test func finishedStartReleasesItsResultWhileScopeRemainsOpen() async throws {
+  @Test(arguments: [false, true])
+  func finishedStartReleasesItsResultWhileScopeRemainsOpen(deferred: Bool) async throws {
     let root = Scope.root()
     let released = Gate()
     func startAndObserve() async throws {
-      let result = try root.start { DeinitSignal(released) }
+      let result: WorkResult<DeinitSignal>
+      if deferred {
+        let work = Work { DeinitSignal(released) }
+        result = try root.start(consume work)
+      } else {
+        result = try root.start { DeinitSignal(released) }
+      }
       _ = try await result.value
     }
     try await startAndObserve()

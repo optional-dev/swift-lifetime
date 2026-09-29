@@ -12,21 +12,14 @@ struct CycleTests {
     }
   }
 
-  @Test func adoptedWrappedWorkCannotAwaitAnAncestor() async {
+  @Test func deferredWorkCannotAwaitAnAncestor() async {
     await #expect(processExitsWith: .failure) {
       let root = Scope.root()
       let child = try root.child()
-      let ready = Gate()
-      let started = Gate()
       let work = Work {
-        started.open()
-        await ready.wait()
         await root.cancel()
       }
-      let result = work.result
-      await started.wait()
-      try await child.adopt(WrappedWork(work: consume work))
-      ready.open()
+      let result = try child.start(consume work)
       try await result.value
     }
   }
@@ -66,13 +59,15 @@ struct CycleTests {
   @Test func workCannotAwaitItsOwnResult() async {
     await #expect(processExitsWith: .failure) {
       let cell = AsyncCell<WorkResult<Void>>()
+      let root = Scope.root()
       let work = Work {
         let result = await cell.wait()
         try await result.value
       }
-      cell.resolve(work.result)
-      try await work.result.value
-      await work.cancel()
+      let result = try root.start(consume work)
+      cell.resolve(result)
+      try await result.value
+      await root.cancel()
     }
   }
 }
