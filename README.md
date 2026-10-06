@@ -2,12 +2,13 @@
 
 Track asynchronous work in a tree and await cancellation of any subtree.
 
-The package vends one product, `Lifetime`, with five public types:
+The package vends one product, `Lifetime`, with six public types:
 
 | Type | Purpose |
 | --- | --- |
 | `Scope` | A reference to a tree node; creates children and owns leaf registrations. |
 | `LifetimeHandle` | The contract `borrowing func cancel() async`: request cancellation and await all represented work and cleanup. |
+| `CompletingLifetimeHandle` | A `LifetimeHandle` that adds `borrowing func wait() async`: await natural completion without cancelling. |
 | `Work<Value>` | A noncopyable, deferred operation consumed when a scope starts it. |
 | `WorkResult<Value>` | A copyable result observer that carries no cancellation ownership. |
 | `ScopeError` | `.closed`, thrown when a scope cannot admit a child or work. |
@@ -107,8 +108,10 @@ scope is closed, adoption cancels **and drains** the supplied handle before
 throwing `.closed`. A rejected registration is not part of the tree; its adopting
 caller owns that drain until the call returns.
 
-Unlike `start`, generic adoption retains its handle until scope cancellation,
-because `LifetimeHandle` has no independent completion notification. Use
+A plain `LifetimeHandle` has no completion notification, so generic adoption
+retains it until scope cancellation. Conform to `CompletingLifetimeHandle` to
+add `wait()`; the scope then releases the handle as soon as its work finishes
+and awaits it, rather than cancelling it, during `finish()`. Use
 `scope.start(work)` for deferred `Work` values; they cannot be adopted, including
 through generic forwarding functions.
 
@@ -117,9 +120,11 @@ through generic forwarding functions.
 - Only `Scope.root` and `scope.child` create nodes. Parentage never changes.
   `Scope` does not conform to `LifetimeHandle`, so `scope.adopt(scope)` does not
   compile. There is no arbitrary scope adoption, detachment, or reparenting.
-- Cancelling a scope permanently closes it and all descendants to admission.
-  A concurrent registration is either included or rejected. Siblings outside
-  the subtree remain open.
+- Cancelling or finishing a scope permanently closes it and all descendants to
+  admission. A concurrent registration is either included or rejected. Siblings
+  outside the subtree remain open.
+- Finishing lets admitted work complete on its own. Cancellation escalates a
+  finishing subtree; `finish()` and `cancel()` callers await the same completion.
 - Sibling work is cancelled concurrently. Repeated and concurrent `cancel()`
   calls join the same completion. Cancelling a waiting caller does not make
   that caller return before cleanup completes.
@@ -128,10 +133,11 @@ through generic forwarding functions.
   a child's internal completion records, not a reference to its public handle.
   Dropping a child therefore requests cancellation, and the parent can still
   await its cleanup. Dropping a root cancels even retained descendants.
-- From **inside** a subtree, use `scope.requestCancellation()`. Awaiting
-  `scope.cancel()` there would wait for the caller itself. Detected self-await
-  cycles fail a precondition instead of hanging. Await `cancel()` from outside
-  the target subtree.
+- From **inside** a subtree, use `scope.requestCancellation()` or
+  `scope.close()`. Awaiting `scope.cancel()` or `scope.finish()` there would
+  wait for the caller itself. Detected self-await cycles fail a precondition
+  instead of hanging. Await `cancel()` and `finish()` from outside the target
+  subtree.
 
 For example, this is valid:
 
@@ -147,11 +153,59 @@ await scope.cancel()
 The operation may be skipped with `CancellationError` if cancellation wins the
 startup race.
 
+## Structured scopes
+
+`withChild` and `Scope.withRoot` bind a scope to a block. The scope is cancelled
+and fully drained before the call returns or rethrows, so work started inside
+cannot outlive the block. If the calling task is cancelled, the child's subtree
+is requested to cancel while the block keeps running; a task that is already
+cancelled receives a closed child.
+
+```swift
+try await app.withChild(name: "request") { request in
+  let user = try request.start { try await loadUser() }
+  let posts = try request.start { try await loadPosts() }
+  return try await (user.value, posts.value)
+}
+// Everything started in `request` has finished here, even on error.
+```
+
+`withChild` throws `ScopeError.closed` without running the block when the
+parent is closed. `withRoot` rethrows only the block's own error type, so a
+non-throwing block needs no `try`. Await `finish()` inside the block to let
+started work complete instead of cancelling it on exit.
+
+## Finish without cancelling
+
+`finish()` closes a subtree to new work and awaits what is already running.
+`close()` is its synchronous counterpart: it closes admission without waiting,
+and is safe to call from inside the subtree.
+
+```swift
+let accept = try server.child(name: "accept")
+let requests = try server.child(name: "requests")
+// ...
+await accept.cancel()    // Stop producing new requests.
+await requests.finish()  // Let in-flight requests complete.
+await server.cancel()
+```
+
+Started work and `CompletingLifetimeHandle` leaves finish on their own. Plain
+`LifetimeHandle` leaves cannot report completion, so `finish()` cancels them.
+A later `cancel()`, `requestCancellation()`, or dropped scope escalates a
+finishing subtree to cancellation; every waiting caller then joins the same
+completion. `isClosed` reports whether a scope is finishing or cancelling. It is
+advisory: admission itself is decided atomically by `child`, `start`, and `adopt`.
+
 ## Custom leaf work
 
 ```swift
 public protocol LifetimeHandle: Sendable, ~Copyable {
   borrowing func cancel() async
+}
+
+public protocol CompletingLifetimeHandle: LifetimeHandle, ~Copyable {
+  borrowing func wait() async
 }
 ```
 
@@ -160,6 +214,11 @@ represented work and cleanup has finished. Concurrent/repeated calls must join
 the same completion, even if cancellation started independently. A cancelled
 calling task must still wait. Conformers may also cancel themselves or cancel
 on deinit; neither changes this contract.
+
+`wait()` has the same completion contract without requesting cancellation. A
+scope calls it to observe natural completion and during `finish()`; it may run
+more than once and concurrently with `cancel()`. The scope calls `cancel()` at
+most once per registration.
 
 The protocol permits reference types and copyable values as well as noncopyable
 values. It cannot prove a custom implementation's semantics or prevent aliases

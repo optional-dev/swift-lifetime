@@ -1,5 +1,5 @@
 // Only Scope.start creates this cancellation owner, after admission succeeds.
-struct RunningWork<Value: Sendable>: LifetimeHandle, ~Copyable {
+struct RunningWork<Value: Sendable>: CompletingLifetimeHandle, ~Copyable {
   let task: Task<Value, any Error>
   let identity: WorkIdentity
 
@@ -16,8 +16,14 @@ struct RunningWork<Value: Sendable>: LifetimeHandle, ~Copyable {
 
   borrowing func cancel() async {
     precondition(CancellationContext.work !== identity, "Work cannot await its own cancellation.")
-    identity.recordCancellation(in: CancellationContext.ancestors)
+    identity.recordClosure(in: CancellationContext.ancestors)
     task.cancel()
+    _ = await task.result
+  }
+
+  borrowing func wait() async {
+    precondition(CancellationContext.work !== identity, "Work cannot await its own completion.")
+    identity.recordClosure(in: CancellationContext.ancestors)
     _ = await task.result
   }
 

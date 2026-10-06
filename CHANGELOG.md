@@ -4,6 +4,33 @@ All notable changes to `swift-lifetime` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- `Scope.withChild(name:_:)` and `Scope.withRoot(name:_:)` bind a scope to a
+  block. The scope is cancelled and drained before the call returns or
+  rethrows, and cancellation of the calling task requests cancellation of the
+  block's subtree. `withRoot` rethrows only the block's own error type.
+- `Scope.finish()` closes a subtree to new work and awaits what is already
+  running without cancelling it; `Scope.close()` is the synchronous,
+  non-waiting form that is safe to call from inside the subtree. A later
+  `cancel()`, `requestCancellation()`, or dropped scope escalates a finishing
+  subtree, and every waiting caller joins the same completion.
+- `CompletingLifetimeHandle` refines `LifetimeHandle` with
+  `borrowing func wait() async`. A scope releases a completing handle as soon
+  as its work finishes instead of retaining it until cancellation, and
+  `finish()` awaits it instead of cancelling it. Plain handles are still
+  retained until cancellation and are cancelled by `finish()`.
+- `Scope.isClosed` reports, advisorily, whether a subtree is closed to admission.
+
+### Changed
+
+- `ScopeError.closed` now also describes a scope that is finishing.
+- A scope invokes `cancel()` at most once per registration, including when a
+  finishing subtree is later cancelled. `wait()` may be invoked more than once.
+- Self-await detection covers `finish()` and completing-handle callbacks.
+
 ## 3.0.0
 
 ### Changed

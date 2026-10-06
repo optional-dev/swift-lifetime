@@ -49,12 +49,52 @@ struct RaceTests {
     await child.cancel()
   }
 
+  @Test(arguments: 0..<20)
+  func startRacingFinishIsEitherAwaitedOrRejected(iteration: Int) async throws {
+    let root = Scope.root()
+    let child = try root.child()
+    let start = Gate()
+    let finishReturned = Gate()
+    let running = Counter()
+    await withTaskGroup(of: Void.self) { group in
+      group.addTask {
+        await start.wait()
+        await root.finish()
+        finishReturned.open()
+        #expect(running.value == 0)
+      }
+      for _ in 0..<32 {
+        group.addTask {
+          await start.wait()
+          do {
+            let work = Work {
+              #expect(!finishReturned.isOpen)
+              running.increment()
+              await Task.yield()
+              running.decrement()
+              return Task.isCancelled
+            }
+            let result = try child.start(consume work)
+            #expect(try await result.value == false)
+          } catch {
+            #expect(error as? ScopeError == .closed)
+          }
+        }
+      }
+      start.open()
+    }
+    #expect(finishReturned.isOpen)
+    #expect(running.value == 0)
+    #expect(throws: ScopeError.closed) { try child.child() }
+    await child.cancel()
+  }
+
   @Test func pendingRegistrationIsDrainedEvenWhenInstalledAfterClosure() async {
     let node = ScopeNode(ancestors: [])
     let tree = ScopeTree(root: node)
     let registration = WorkRegistration(name: nil)
     #expect(tree.insert(registration, into: node))
-    tree.requestCancellation(of: node)
+    tree.close(node, cancelling: true)
     #expect(!tree.insert(WorkRegistration(name: nil), into: node))
     let leaf = Leaf()
     registration.install(leaf)

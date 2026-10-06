@@ -12,13 +12,14 @@ final class ScopeToken: Sendable, Hashable {
   func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
 }
 
-// Detect cycles at either end of a wait: Scope.cancel records a wait, and
-// RunningWork.cancel records its cancelling scope's ancestry. One mutex makes
-// both orderings safe, including cancellation racing task creation/installation.
+// Detect cycles at either end of a wait: Scope.cancel and Scope.finish record a
+// wait, and a closing driver records the ancestry of the node awaiting this work.
+// One mutex makes both orderings safe, including closure racing task
+// creation/installation.
 final class WorkIdentity: Sendable {
   private struct State {
     var waits: [ScopeToken: Int] = [:]
-    var cancellationAncestors: Set<ScopeToken> = []
+    var closingAncestors: Set<ScopeToken> = []
   }
 
   private let state = Mutex(State())
@@ -26,8 +27,8 @@ final class WorkIdentity: Sendable {
   func beginWaiting(for scope: ScopeToken) {
     state.withLock { state in
       precondition(
-        !state.cancellationAncestors.contains(scope),
-        "Work cannot await cancellation of its own subtree. Use requestCancellation()."
+        !state.closingAncestors.contains(scope),
+        "Work cannot await completion of its own subtree. Use requestCancellation() or close()."
       )
       state.waits[scope, default: 0] += 1
     }
@@ -44,13 +45,13 @@ final class WorkIdentity: Sendable {
     }
   }
 
-  func recordCancellation(in ancestors: [ScopeToken]) {
+  func recordClosure(in ancestors: [ScopeToken]) {
     state.withLock { state in
       precondition(
         ancestors.allSatisfy { state.waits[$0] == nil },
-        "Work cannot await cancellation of its own subtree. Use requestCancellation()."
+        "Work cannot await completion of its own subtree. Use requestCancellation() or close()."
       )
-      state.cancellationAncestors.formUnion(ancestors)
+      state.closingAncestors.formUnion(ancestors)
     }
   }
 }

@@ -31,3 +31,19 @@ final class AsyncCell<Value: Sendable>: Sendable {
     }
   }
 }
+
+// Runs an operation for its first caller; every later caller joins that completion.
+final class Once: Sendable {
+  private let claimed = Mutex(false)
+  private let completion = AsyncCell<Void>()
+
+  func run(_ operation: () async -> Void) async {
+    let first = claimed.withLock { claimed in
+      defer { claimed = true }
+      return !claimed
+    }
+    guard first else { return await completion.wait() }
+    await operation()
+    completion.resolve(())
+  }
+}

@@ -70,4 +70,42 @@ struct CycleTests {
       await root.cancel()
     }
   }
+
+  @Test func startedWorkCannotFinishItsOwnScope() async {
+    await #expect(processExitsWith: .failure) {
+      let root = Scope.root()
+      let result = try root.start { await root.finish() }
+      try await result.value
+    }
+  }
+
+  @Test func alreadyFinishingWorkCannotBeginASelfWait() async {
+    await #expect(processExitsWith: .failure) {
+      let root = Scope.root()
+      let started = Gate()
+      let closed = Gate()
+      let result = try root.start {
+        started.open()
+        await closed.wait()
+        await root.finish()
+      }
+      await started.wait()
+      root.close()
+      closed.open()
+      try await result.value
+    }
+  }
+
+  @Test func completingCallbackCannotAwaitItsOwnSubtree() async {
+    await #expect(processExitsWith: .failure) {
+      struct InvalidLeaf: CompletingLifetimeHandle {
+        let root: Scope
+        func cancel() async {}
+        func wait() async { await root.finish() }
+      }
+      let root = Scope.root()
+      try await root.adopt(InvalidLeaf(root: root))
+      await root.finish()
+    }
+  }
 }

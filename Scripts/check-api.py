@@ -60,6 +60,31 @@ fixtures = {
           await root.cancel()
         }
     """),
+    "completing_handles_and_structured_scopes": (None, """
+        import Lifetime
+        struct CompletingLeaf: CompletingLifetimeHandle, ~Copyable {
+          borrowing func cancel() async {}
+          borrowing func wait() async {}
+        }
+        func forward<H: CompletingLifetimeHandle & ~Copyable>(
+          _ handle: consuming H, into scope: Scope
+        ) async throws {
+          try await scope.adopt(consume handle)
+        }
+        func useAPI() async throws {
+          // A non-throwing body needs no try: withRoot rethrows the body's error type.
+          let closed = await Scope.withRoot { root in root.isClosed }
+          try await Scope.withRoot(name: "root") { root in
+            try await root.withChild(name: "child") { child in
+              try await child.adopt(CompletingLeaf())
+              try await forward(CompletingLeaf(), into: child)
+              child.close()
+              await child.finish()
+              return closed
+            }
+          }
+        }
+    """),
     "actor_isolated_captures_are_safe": (None, """
         import Lifetime
         final class Counter { var value = 0 }

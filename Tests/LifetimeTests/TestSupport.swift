@@ -70,6 +70,18 @@ final class WorkEvents: Sendable {
       cancelled.open()
     }
   }
+
+  // Finishes once released whether or not it was cancelled.
+  func runUntilReleased() async -> Bool {
+    await withTaskCancellationHandler {
+      started.open()
+      await release.wait()
+      finished.open()
+      return Task.isCancelled
+    } onCancel: {
+      cancelled.open()
+    }
+  }
 }
 
 final class Leaf: LifetimeHandle {
@@ -84,6 +96,37 @@ final class Leaf: LifetimeHandle {
     await release.wait()
     finished.open()
   }
+}
+
+final class CompletingLeaf: CompletingLifetimeHandle {
+  let waited = Gate()
+  let cancelled = Gate()
+  let release = Gate()
+  let finished = Gate()
+  let cancelCalls = Mutex(0)
+
+  func cancel() async {
+    cancelCalls.withLock { $0 += 1 }
+    cancelled.open()
+    await release.wait()
+    finished.open()
+  }
+
+  func wait() async {
+    waited.open()
+    await release.wait()
+    finished.open()
+  }
+}
+
+// A copyable completing handle whose release is observable through its resource.
+struct CompletingBox: CompletingLifetimeHandle {
+  let leaf: CompletingLeaf
+  let resource: DeinitSignal
+
+  func cancel() async { await leaf.cancel() }
+
+  func wait() async { await leaf.wait() }
 }
 
 final class DeinitSignal: Sendable {
