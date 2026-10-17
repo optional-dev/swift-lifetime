@@ -6,10 +6,10 @@ utilities without a tree ownership role belong elsewhere.
 
 ## Requirements
 
-Use Swift 6.2+ in Swift 6 language mode. The package enables strict memory safety,
+Use Swift 6.4+ in Swift 6 language mode. The package enables strict memory safety,
 nonisolated default isolation, and `NonisolatedNonsendingByDefault`. Apple platform
-minimums are macOS 15, iOS 18, tvOS 18, and watchOS 11, driven by
-`Synchronization.Mutex`. Linux is supported.
+minimums are macOS 27, iOS 27, tvOS 27, and watchOS 27, so async `defer` and task
+cancellation shields are available without compatibility fallbacks. Linux is supported.
 
 ## Checks
 
@@ -22,7 +22,7 @@ swift format lint --recursive --strict Sources Tests Package.swift
 ```
 
 To run the Linux suite using Docker: `./linux.sh run swift test`. CI tests both
-Swift 6.2 and the latest Linux image. The old benchmark executable covered the
+Swift 6.4 and the latest Linux image. The old benchmark executable covered the
 removed API and has been removed; performance claims need measurements against
 the new implementation.
 

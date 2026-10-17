@@ -4,6 +4,10 @@ Track asynchronous work in a tree and await cancellation of any subtree.
 
 ## Overview
 
+Requires Swift 6.4+ and macOS 27+, iOS 27+, tvOS 27+, or watchOS 27+.
+Linux is also supported. Async `defer` and task cancellation shields are
+available on all supported platforms.
+
 Create a ``Scope`` root and immutable children, or bind one to a block with
 ``Scope/withRoot(name:_:)`` and ``Scope/withChild(name:_:)``. Register work with
 ``Scope/start(name:inheriting:priority:operation:)``, start a separately prepared

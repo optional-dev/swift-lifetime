@@ -27,7 +27,8 @@ assert [p["name"] for p in package["products"]] == ["Lifetime"]
 flags = ["-swift-version", "6", "-parse-as-library", "-I", str(module)]
 if sys.platform == "darwin":
     target = json.loads(run(SWIFTC, "-print-target-info").stdout)["target"]["unversionedTriple"]
-    flags += ["-target", target + "15.0"]
+    macos = next(p["version"] for p in package["platforms"] if p["platformName"] == "macos")
+    flags += ["-target", target + macos]
 
 # Compile to SIL/object code: type checking alone does not run ownership checking.
 fixtures = {

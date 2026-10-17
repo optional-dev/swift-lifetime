@@ -14,9 +14,9 @@ concurrency:
 jobs:
   macos:
     name: build + test (macOS)
-    runs-on: macos-26
+    runs-on: xcode-27
     env:
-      XCODE_PATH: /Applications/Xcode_26.5.app/Contents/Developer
+      XCODE_PATH: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        swift: ["6.2", "latest"]
+        swift: ["6.4", "latest"]
     container:
       image: swift:${{ matrix.swift }}
     steps:
@@ -65,9 +65,9 @@ jobs:
 
   lint:
     name: swift-format lint
-    runs-on: macos-26
+    runs-on: xcode-27
     env:
-      XCODE_PATH: /Applications/Xcode_26.5.app/Contents/Developer
+      XCODE_PATH: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
 

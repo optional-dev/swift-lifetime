@@ -18,18 +18,18 @@ all other APIs have been removed; see [CHANGELOG.md](CHANGELOG.md).
 
 ## Installation
 
-Requires Swift 6.2+, Swift 6 language mode, and macOS 15+, iOS 18+, tvOS 18+,
-or watchOS 11+. Linux is supported. There are no package dependencies.
+Requires Swift 6.4+, Swift 6 language mode, and macOS 27+, iOS 27+, tvOS 27+,
+or watchOS 27+. These minimums support async `defer` and task cancellation
+shields. Linux is supported. There are no package dependencies.
 
-The new API is unreleased. Pin a revision containing it, or track `main` while
-evaluating the redesign:
+Add the package dependency:
 
 ```swift
-.package(url: "https://github.com/GoodHatsLLC/swift-lifetime.git", branch: "main")
+.package(url: "https://github.com/optional-dev/swift-lifetime.git", from: "4.0.0")
 ```
 
 Add `.product(name: "Lifetime", package: "swift-lifetime")` to your target.
-The 1.0.0 tag contains the previous API.
+The 3.x releases retain the previous Swift and platform requirements.
 
 ## Start tracked work
 
@@ -65,6 +65,69 @@ Observe errors through `WorkResult.value`. Cancellation waits for completion
 without rethrowing an operation's error. Swift cancellation is cooperative:
 operations must respond to cancellation and await all their structured children
 and asynchronous cleanup before returning.
+
+## Clean up after cancellation
+
+Use async `defer` with `withTaskCancellationShield` for teardown that must run
+even when the operation's task has been cancelled. Async `defer` keeps cleanup
+inside the operation's lifetime; the shield prevents cancellation-sensitive
+cleanup from immediately throwing or returning early because the task is
+cancelled. Async `defer` alone does not shield cancellation. These features are
+provided by [SE-0493](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0493-defer-async.md)
+and [SE-0504](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0504-task-cancellation-shields.md).
+
+Keep resource acquisition, use, and teardown together in a named async function.
+For example, assuming the application supplies `openSession()` and the session
+has a nonthrowing async `close()`:
+
+```swift
+@MainActor
+func runSession() async throws {
+  let session = try await openSession()
+  defer {
+    await withTaskCancellationShield {
+      await session.close()
+    }
+  }
+
+  try await session.run()
+}
+
+let scope = Scope.root(name: "session")
+let result = try scope.start {
+  try await runSession()
+}
+
+// At the lifecycle boundary, outside the operation:
+await scope.cancel()  // Also waits for session.close().
+```
+
+Use the actor isolation appropriate for the resource; `@MainActor` is only an
+example. The same function can be called from a deferred `Work` operation.
+
+- Cleanup runs on success, error, and cancellation after acquisition succeeds.
+  Acquiring inside the operation avoids creating resources if startup is skipped.
+- Both `cancel()` and `finish()` wait for the operation's cleanup. Cancellation
+  still requires the operation to cooperate and return or throw before its
+  `defer` runs.
+- Shield only teardown. Shielding the entire operation can prevent it from
+  responding to the scope's cancellation request. Keep cleanup awaited; a
+  fire-and-forget `Task` in `defer` would outlive the tracked operation.
+- `defer` cannot propagate a cleanup error. Handle throwing teardown explicitly
+  inside the shield, or use a resource-management function that defines how to
+  combine operation and cleanup failures. Observe operation errors through
+  `result.value`; `scope.cancel()` does not rethrow them.
+
+Local testing with Apple Swift 6.4 (Xcode 27.0) found an actor-isolation issue
+with async `defer` inside actor-isolated closures: an actor assertion could fail
+when entering the defer. This also reproduced with plain `Task`, independently
+of Lifetime. Moving the defer into a named actor-isolated async function, as
+above, avoided the failure. Treat this as a toolchain-specific workaround, not
+an intended difference between functions and closures.
+
+The same testing observed an outer cancellation handler being skipped when
+cancellation arrived during a shield. Keep teardown independent of cancellation
+callbacks; waiting for one to release shielded cleanup can hang.
 
 ## Prepare work separately
 

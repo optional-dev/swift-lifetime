@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.4
 
 import PackageDescription
 
@@ -15,7 +15,7 @@ let settings: [SwiftSetting] = [
 
 let package = Package(
   name: "swift-lifetime",
-  platforms: [.macOS(.v15), .iOS(.v18), .tvOS(.v18), .watchOS(.v11)],
+  platforms: [.macOS(.v27), .iOS(.v27), .tvOS(.v27), .watchOS(.v27)],
   products: [.library(name: "Lifetime", targets: ["Lifetime"])],
   targets: [
     .target(name: "Lifetime", swiftSettings: settings),

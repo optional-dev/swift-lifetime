@@ -4,7 +4,24 @@ All notable changes to `swift-lifetime` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## [Unreleased]
+
+## [4.0.0] - 2026-10-16
+
+### Changed
+
+- **Breaking:** Require Swift 6.4+ and macOS 27+, iOS 27+, tvOS 27+, or
+  watchOS 27+, enabling async `defer` and task cancellation shields on all
+  supported platforms. Linux remains supported.
+- Update CI to Xcode 27 and Swift 6.4, and derive the API compile-check
+  deployment target from the package manifest.
+
+### Added
+
+- README guidance for awaited, shielded teardown, including error handling and
+  observed Swift 6.4 toolchain caveats.
+
+## [3.1.0] - 2026-10-06
 
 ### Added
 
@@ -108,5 +125,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Swift 6.2+ in Swift 6 language mode.
 - macOS 15+, iOS 18+, tvOS 18+, watchOS 11+.
 
-[Unreleased]: https://github.com/GoodHatsLLC/swift-lifetime/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/optional-dev/swift-lifetime/compare/4.0.0...HEAD
+[4.0.0]: https://github.com/optional-dev/swift-lifetime/compare/3.1.0...4.0.0
+[3.1.0]: https://github.com/optional-dev/swift-lifetime/compare/3.0.0...3.1.0
 [1.0.0]: https://github.com/GoodHatsLLC/swift-lifetime/releases/tag/1.0.0
